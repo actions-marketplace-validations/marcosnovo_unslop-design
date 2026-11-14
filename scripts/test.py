@@ -7,6 +7,9 @@ the hits tests/expected.json says, per rule, and no others.
     python3 scripts/test.py --update        # rewrite expected.json from the current output (review the diff!)
     python3 scripts/test.py stock-kit       # only cases whose name contains "stock-kit"
 
+expected.json also holds "cli" checks: a script, its arguments, the exit code
+and strings the output must (or must not) contain.
+
 Each case is one folder, scanned as a unit (so cross-file checks like
 undefined tokens see the whole case). A rule not listed for a case must give
 zero hits. When a change to a rule is intended, run --update and read the
@@ -46,10 +49,10 @@ def scan_case(scan, folder):
     return dict(sorted(counts.items()))
 
 
-def audit_case(script, html):
+def audit_case(script, html, widths="390"):
     """Run web-audit.mjs on one page; None if Playwright isn't available."""
     with tempfile.TemporaryDirectory() as out:
-        r = subprocess.run(["node", script, html, "--out", out, "--widths", "390"],
+        r = subprocess.run(["node", script, html, "--out", out, "--widths", widths],
                            capture_output=True, text=True, timeout=300)
         if r.returncode == 2 and "Playwright" in (r.stderr + r.stdout):
             return None
@@ -63,6 +66,9 @@ def audit_case(script, html):
         "emoji": len(m["emoji"]),
         "glow": len(m["glow"]),
         "text_scales": bool(ts.get("checked")) and ts.get("grew", 0) / ts["checked"] >= 0.5,
+        "long_lines": len(m.get("longLines", [])),
+        "aligned_text": len(m.get("alignedText", [])),
+        "empty_blocks": len(m.get("emptyBlocks", [])),
     }
 
 
@@ -94,12 +100,33 @@ def main():
             diff = {k: f"{want.get(k, 0)} → {got.get(k, 0)}" for k in sorted(set(want) | set(got)) if want.get(k, 0) != got.get(k, 0)}
             failures.append(f"{name}: " + ", ".join(f"{k} {v}" for k, v in diff.items()))
 
+    # Command-line behavior that hit counts can't express: --allow, refusals, exit codes.
+    for check in expected.get("cli", []):
+        if a.only and a.only not in check["name"]:
+            continue
+        cmd = [sys.executable, os.path.join(HERE, check["script"])] + [
+            arg.replace("{cases}", CASES) for arg in check["args"]]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        out = r.stdout + r.stderr
+        ran += 1
+        problems = []
+        if r.returncode != check["exit"]:
+            problems.append(f"exit {check['exit']} → {r.returncode}")
+        for s in check.get("contains", []):
+            if s not in out:
+                problems.append(f"missing {s!r}")
+        for s in check.get("excludes", []):
+            if s in out:
+                problems.append(f"unexpected {s!r}")
+        if problems:
+            failures.append(f"{check['name']} (cli): " + "; ".join(problems))
+
     audited = skipped = 0
     if a.audit:
         for name, page in sorted(expected.get("audit", {}).items()):
             if a.only and a.only not in name:
                 continue
-            got = audit_case(a.audit, os.path.join(CASES, name, page["page"]))
+            got = audit_case(a.audit, os.path.join(CASES, name, page["page"]), page.get("widths", "390"))
             if got is None:
                 skipped += 1
                 continue

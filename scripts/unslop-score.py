@@ -50,6 +50,9 @@ CODE = {
     "arbitrary-value": ("Tailwind arbitrary values", "#1", 0.5, 8),
     "off-scale": ("Values off the spacing scale", "#1", 0.5, 8),
     "native-literal": ("Literals in native views", "#1", 0.5, 8),
+    "elevation-literal": ("Elevation literals on components", "#5", 1, 3),
+    "translucent-text": ("Semi-transparent white text", "#22", 1, 4),
+    "empty-action": ("Controls with an empty action", "#64", 2, 6),
 }
 # Rendered page. "sprawl" = distinct values beyond what a system needs.
 PAGE = {
@@ -57,6 +60,9 @@ PAGE = {
     "contrast": ("Text under WCAG AA", "P5", 1, 15),
     "graphics-contrast": ("Icons/graphics under 3:1", "P5", 1, 6),
     "text-scale": ("Type ignores the reader's text size", "#2", 3, 3),
+    "long-lines": ("Lines over ~85 characters", "#27", 1, 4),
+    "aligned-text": ("Long text justified or centered", "#28", 1, 3),
+    "empty-block": ("Empty placeholder blocks", "#35", 2, 4),
     "focus": ("No visible focus", "#53", None, 10),
     "targets": ("Targets under 24 px", "#53", 0.5, 5),
     "spacing-sprawl": ("Distinct spacing values > 8", "#1", 0.5, 8),
@@ -80,13 +86,13 @@ def cost(n, per, cap):
     return min(cap, n * per) if n else 0
 
 
-def score_code(paths, scale):
+def score_code(paths, scale, type_scale=None):
     scan = load_scanner()
     hits, files, seen = {}, 0, []
     for f in scan.files(paths):
         files += 1
         seen.append(f)
-        scan.scan(f, scale, hits)
+        scan.scan(f, scale, hits, type_scale)
     scan.token_checks(seen, hits)
     counts = {rid: len(where) for (rid, _ref, _desc), where in hits.items()}
     return files, counts
@@ -98,6 +104,9 @@ def score_page(report):
     rows["overflow"] = sum(1 for w in report["widths"].values() if w["overflow"]["scrollWidth"] > w["overflow"]["viewport"])
     rows["contrast"] = len(m["contrastFails"])
     rows["graphics-contrast"] = len(m.get("graphicsFails", []))
+    rows["long-lines"] = len(m.get("longLines", []))
+    rows["aligned-text"] = len(m.get("alignedText", []))
+    rows["empty-block"] = len(m.get("emptyBlocks", []))
     ts = report.get("textScale") or {}
     rows["text-scale"] = 1 if ts.get("checked") and ts.get("grew", 0) / ts["checked"] < 0.5 else 0
     rows["targets"] = len(m["smallTargets"])
@@ -128,7 +137,12 @@ def main():
     ap.add_argument("--scale", default="0,1,2,4,8,12,16,20,24,32,40,48,64,80,96")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--min", type=float, help="exit 1 below this score")
+    ap.add_argument("--type-scale", help="allowed font sizes in px (default: slop-scan's)")
+    ap.add_argument("--allow", metavar="RULES",
+                    help="rule ids a written project decision allows; not scored, listed apart. "
+                         "Never contrast, graphics-contrast or unverified-claim")
     a = ap.parse_args()
+    allow = load_scanner().parse_allow(a.allow)
     paths = a.paths or ([] if a.audit else ["."])
     lines, total = [], 0.0
 
@@ -137,7 +151,8 @@ def main():
     if missing:
         sys.exit(f"no such path: {', '.join(missing)}")
     if paths:
-        files, code_counts = score_code(paths, {float(x) for x in a.scale.split(",")})
+        files, code_counts = score_code(paths, {float(x) for x in a.scale.split(",")},
+                                        {float(x) for x in a.type_scale.split(",")} if a.type_scale else None)
         if not files and not a.audit:
             sys.exit(f"no UI source files under {', '.join(paths)}: nothing to score")
     page_rows, focus, shared = {}, {}, {}
@@ -148,8 +163,13 @@ def main():
         except (OSError, ValueError, KeyError) as e:
             sys.exit(f"can't read the audit report {a.audit}: {e}. Run scripts/web-audit.mjs first.")
 
+    allowed = []
     for rid, (label, ref, per, cap) in CODE.items():
         n = max(code_counts.get(rid, 0), shared.get(rid, 0))
+        if rid in allow:
+            if n:
+                allowed.append(f"{rid} ×{n}")
+            continue
         p = cost(n, per, cap)
         if p:
             lines.append((p, f"[{ref}] {label}", n))
@@ -161,6 +181,10 @@ def main():
             n = f"{missing}/{checked}"
         else:
             n = page_rows.get(rid, 0)
+            if rid in allow:
+                if n:
+                    allowed.append(f"{rid} ×{n}")
+                continue
             p = cost(n, per, cap)
         if p:
             lines.append((p, f"[{ref}] {label}", n))
@@ -172,7 +196,8 @@ def main():
     lines.sort(key=lambda x: -x[0])
     if a.json:
         print(json.dumps({"score": score, "verdict": word, "files": files, "audit": bool(a.audit), "badge": badge,
-                          "penalties": [{"rule": r, "count": n, "points": p} for p, r, n in lines]}, indent=2))
+                          "penalties": [{"rule": r, "count": n, "points": p} for p, r, n in lines],
+                          "allowed": allowed}, indent=2))
     else:
         src = []
         if paths:
@@ -180,6 +205,8 @@ def main():
         if a.audit:
             src.append("rendered page")
         print(f"unslop score: {score}/100 — {word}  ({' + '.join(src)})")
+        if allowed:
+            print("allowed by the project (--allow, not scored): " + ", ".join(allowed))
         if lines:
             print("\nWhere the points went (fix the top rows first):")
             for p, rule, n in lines:
