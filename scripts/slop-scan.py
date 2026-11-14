@@ -23,7 +23,8 @@ SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", ".nuxt", ".svelte
 # Files where literals belong: the token/theme definitions themselves.
 TOKEN_FILE = re.compile(r"(token|theme|variables|palette|colors?|tailwind\.config|design[-_]?system)", re.I)
 
-EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿⭐⬆↔-↪⌚-⏿]")
+# Typographic marks in the same blocks (✓ ✔ ✕ ✗ ★ ☆) are characters, not emoji.
+EMOJI = re.compile("(?![✓✔✕✖✗✘★☆✦✧])[\U0001F300-\U0001FAFF☀-➿⭐⬆↔-↪⌚-⏿]")
 PX_PROP = re.compile(r"\b(padding|margin|gap|row-gap|column-gap|font-size|border-radius|inset|top|left|right|bottom)"
                      r"(-[a-z]+)?\s*:\s*([^;}{]+)", re.I)
 PX = re.compile(r"(-?\d+(?:\.\d+)?)px")
@@ -54,6 +55,8 @@ RULES = [
      EMOJI, "all"),
     ("shouting", "#52", "Exclamation marks in UI copy",
      re.compile(r"[\"'>`][^\"'<`\n]{2,}!!"), "all"),
+    ("exclaim", "#25", "Exclamation mark in UI text (say it plainly)",
+     re.compile(r">[^<>{}\n]*[A-Za-z][!¡](?=[\s\U0001F300-\U0001FAFF☀-➿]*<)"), "web"),
     ("greeting", "#26", "Greeting as a title (name what the screen is)",
      re.compile(r"\b(Welcome back|Hey there|Hello there|Good (morning|afternoon|evening)),?\b", re.I), "all"),
     ("transition-all", "#63", "transition: all (animate transform and opacity, named)",
@@ -65,7 +68,9 @@ RULES = [
      re.compile(r"[\"'>`][^\"'<`\n]*[A-Za-z]\.\.\.(?=[\"'<`\s])"), "all"),
     ("hype-copy", "#64", "Hype copy (say what it does, with a number if there is one)",
      re.compile(r"[\"'>`][^\"'<`\n]*\b(Supercharge|Unleash|Revolutioni[sz]e|Seamless(ly)?|Effortless(ly)?|Game-changing|"
-                r"Cutting-edge|Next-level|Elevate your|Transform your|Take your \w+ to the next level)\b"), "all"),
+                r"Cutting-edge|Next-level|Elevate your|Transform your|Take your \w+ to the next level|"
+                r"Crush (it|your)|You'?ve got this|You got this|Let'?s (go|do this|crush)|Beast mode|Level up|"
+                r"Unlock your|Smash (it|your))\b", re.I), "all"),
     ("no-focus", "#53", "Focus outline removed — is there a :focus-visible style?",
      re.compile(r"outline\s*:\s*(none|0)\b|\boutline-none\b|focus:outline-none"), "web"),
 ]
@@ -100,6 +105,7 @@ CSS_RULE = re.compile(r"\.([\w-]+)\s*\{([^}]*)\}")
 NUMBER_CHILD = re.compile(r">\s*[$€£¥+\-−]?\d[\d.,:]*\s*(%|k|K|M|km|h|min)?\s*<|\btext-([2-6]xl)\b|"
                           r"class(?:Name)?=[\"'][^\"']*\b(num|number|value|metric|stat|kpi)\b")
 CTA = re.compile(r"<(button|Button)\b|<a\b[^>]*\bhref")
+NATIVE_ROW = re.compile(r"\b(LazyVGrid|LazyHGrid|Grid|GridRow|HStack|LazyVerticalGrid|LazyHorizontalGrid|Row|FlowRow)\s*[({]")
 NATIVE_CARD_CALL = re.compile(r"\b([A-Z]\w*(?:Card|Tile))\(")
 
 
@@ -117,6 +123,58 @@ def element_at(text, start):
         if depth == 0:
             return text[start:m.end()]
     return text[start:start + 400]
+
+
+TAG = re.compile(r"<(/?)([\w.]+)\b([^<>]*?)(/?)>")
+ROW_UTILITY = re.compile(r"\bgrid-cols-([2-9]|1[0-2])\b|\bflex\b(?![^\"']*\bflex-col\b)|\bflex-row\b")
+
+
+def css_rules(text, names):
+    return " ".join(m.group(2) for m in CSS_RULE.finditer(text) if m.group(1) in names)
+
+
+def jsx_style(attrs):
+    """style="…" as is; style={{ display: "grid", gridTemplateColumns: "…" }} as CSS."""
+    html = re.search(r"""\bstyle\s*=\s*["']([^"']+)""", attrs)
+    if html:
+        return html.group(1)
+    obj = re.search(r"\bstyle\s*=\s*\{\{(.*?)\}\}", attrs, re.S)
+    if not obj:
+        return ""
+    out = []
+    for k, v in re.findall(r"""(\w+)\s*:\s*(["'`][^"'`]*["'`]|[\w.-]+)""", obj.group(1)):
+        out.append(re.sub(r"[A-Z]", lambda c: "-" + c.group(0).lower(), k) + ": " + v.strip("\"'`") + ";")
+    return " ".join(out)
+
+
+def side_by_side(text, start, cls):
+    """(True when the card sits in a multi-column grid or a flex row, its parent's offset)."""
+    own_row = bool(re.search(r"flex\s*:\s*1\b|flex-grow\s*:\s*1", css_rules(text, set(cls.split()))))
+    stack = []
+    for m in TAG.finditer(text, 0, start):
+        closing, name, attrs, selfclose = m.groups()
+        if selfclose or name.lower() in ("br", "img", "input", "meta", "link", "hr", "source"):
+            continue
+        if closing:
+            while stack and stack.pop()[0] != name:
+                pass
+        else:
+            stack.append((name, attrs, m.start()))
+    if not stack:
+        return own_row, -1
+    _, attrs, parent = stack[-1]
+    if own_row:
+        return True, parent
+    pc = re.search(r"""\bclass(?:Name)?\s*=\s*["'{`]+([^"'`}]+)""", attrs)
+    pcls = pc.group(1) if pc else ""
+    rules = css_rules(text, set(pcls.split())) + " " + jsx_style(attrs)
+    if ROW_UTILITY.search(pcls):
+        return True, parent
+    cols = re.search(r"grid-template-columns\s*:\s*([^;}]+)", rules)
+    if cols and (len(cols.group(1).split()) >= 2 or re.search(r"repeat\(\s*([2-9]|auto)", cols.group(1))):
+        return True, parent
+    row = re.search(r"display\s*:\s*(inline-)?flex", rules) and not re.search(r"flex-direction\s*:\s*column", rules)
+    return bool(row), parent
 
 
 def file_checks(path, text, kind, hits):
@@ -149,7 +207,15 @@ def file_checks(path, text, kind, hits):
             is_surface = (UTILITY_SURFACE.search(cls) and UTILITY_FILL.search(cls)) or names & surfaces
             if is_surface:
                 groups.setdefault(cls, []).append(m.start())
-        for cls, starts in groups.items():
+        rows = {}  # (class, parent) -> starts: each container judged on its own
+        for cls, all_starts in groups.items():
+            if len(all_starts) < 3:
+                continue
+            for s in all_starts:
+                inline, parent = side_by_side(text, s, cls)
+                if inline:  # a stacked list of rows is #40's entity row, not tiles
+                    rows.setdefault((cls, parent), []).append(s)
+        for (cls, _parent), starts in rows.items():
             n = line_of(starts[0])
             if len(starts) < 3 or n in ignored:
                 continue
@@ -166,7 +232,7 @@ def file_checks(path, text, kind, hits):
             calls.setdefault(m.group(1), []).append(m.start())
         for name, starts in calls.items():
             n = line_of(starts[0])
-            if len(starts) >= 3 and n not in ignored:
+            if len(starts) >= 3 and n not in ignored and NATIVE_ROW.search(text):
                 hits.setdefault(key, []).append((path, n, f"{name}(…) ×{len(starts)}"))
 
 
