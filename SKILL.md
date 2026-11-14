@@ -4,7 +4,7 @@ description: Review and redesign an app or website UI to strip out the "slop" (d
 license: MIT
 metadata:
   author: marcosnovo
-  version: "1.8.9"
+  version: "1.9.0"
   homepage: https://github.com/marcosnovo/unslop-design
 ---
 
@@ -37,6 +37,8 @@ Three scripts measure instead of guessing:
 - `python3 scripts/unslop-score.py <paths> [--audit report.json]` — both
   as one number from 0 to 100 with where the points went, plus a README
   badge. Run it before and after: "score 41 → 88" is the PR's headline.
+  A hit is fixed by changing the value, never by hiding it from the
+  scanner (a `calc()` that lands on the same 11px is still 11px).
 
 `examples/dashboard-before.html` and `-after.html` show both on one page.
 
@@ -115,11 +117,20 @@ subagents, no jury, one pass you can finish in a few minutes.
    code or it can't run here (native without a simulator: the mock at
    device size is the render, and the report says so), with the filled
    `spec-card.md` rows it uses. Audit each state as its own page, not the
-   side-by-side board, or the census mixes before and after.
+   side-by-side board, or the census mixes before and after; a phone mock
+   (fluid up to the device width, not a fixed 393px) with `--device` and
+   `--widths 390` (its text-scale line says nothing
+   about native Dynamic Type: draw the largest size instead). For a
+   desktop page, "same width" means its real width: stack the two, don't
+   shrink them into half-width frames.
+   **Only a screenshot, no code:** rebuild the before as an HTML mock from
+   it, sample the colors (say they're approximate) and score the two
+   mocks, labeled as mocks: never quote them as the app's score.
    Score it on the six axes of `process.md` § 4 first; under 3 on any
    axis, revise before showing. For Persuade and Experience screens run
-   the second critic of § 4 once; for Operate and Read, answer its
-   questions 1-3 yourself.
+   the second critic of § 4 once (with no subagents: answer its questions
+   1-3 from the image alone, before rereading your own notes); for Operate
+   and Read, answer questions 1-3 yourself.
 4. On "yes", apply them as tokens (principle 1), rerun the score and report
    "score X → Y" and what's still left.
 

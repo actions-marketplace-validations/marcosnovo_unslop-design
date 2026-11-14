@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.9.0 — 2026-11-14
+
+One release for three blind runs by a fresh agent that only had the skill
+and the request: an order-tracking screen given only as a screenshot, a
+SwiftUI paywall, and a web analytics dashboard.
+
+Paywalls and pressure copy:
+- `checklist.md` gets a **Paywall** bullet: a visible 44pt close, Restore,
+  Terms and Privacy, the price after the trial, one primary, a computed
+  "save N%" with its baseline, plans as rows with one selected state. No
+  resetting countdown, "only N left", unsourced counts or "most popular".
+  Paywalls are no longer exempt as a "brand moment".
+- `slop-scan.py` adds the rule **pressure** (#64): countdowns, "limited
+  time", "only N left", "hurry", "most popular", "best value", and a bare
+  "save N%". "Save 88% vs weekly" passes, even with a tag in between.
+- **unverified-claim** catches "Join 2,000,000+ happy users" (up to two
+  words before the noun).
+- **title-case** knows common screen nouns (Status, Order, History,
+  Payment, Preferences…): "Order Status Tracking" passed before.
+
+Web audit (`web-audit.mjs`):
+- Text on a gradient is checked against its worst stop and marked
+  "estimated", instead of being left as unknown.
+- The default scale includes 1, and the browser's own 1px 6px button
+  padding no longer counts as off-scale. Margins over twice the largest
+  step (`margin: auto` resolved) are skipped.
+- SVG text (chart labels) is left out of the text-scale check.
+- Left edges ignore text in the second and later columns of a grid or
+  flex row.
+- SVG text is measured as drawn: its contrast uses `fill` (not CSS
+  `color`), and a new check lists text drawn under 11 px at each width,
+  with a score row (**tiny-text**). A chart whose viewBox shrinks to a
+  phone took its 12-unit labels down to 5 px with nothing reported.
+- The report groups identical contrast failures (eleven axis labels in
+  one color are one line, ×11) and marks off-scale values that are the
+  browser's default 1em margin on `p`, `ul`, `dl` or a heading.
+
+Process (`SKILL.md`, `checklist.md`):
+- A scanner hit is fixed by changing the value, not by hiding it (a
+  `calc()` that lands on the same 11px). Phone mocks are fluid up to the
+  device width, so the 390 audit doesn't report a scroll that isn't there.
+- #39: chart labels stay at 11 px or more as drawn on a phone.
+- **Only a screenshot, no code:** rebuild the before as an HTML mock,
+  call sampled colors approximate, and label scores as mock scores.
+- Phone mocks are audited with `--device` at 390; the text-scale line
+  doesn't apply to native Dynamic Type. A desktop page is compared at
+  its real width, stacked, not shrunk.
+- With no subagents, the second critic is a separate pass with its own
+  prompt, reported as such.
+- #52: a delta's color follows its meaning (churn or latency going up is
+  worse). #39: keep horizontal grid lines at the kept ticks, drop the
+  vertical ones. #51: app-wide categories keep their color; parts of one
+  measure use one hue light and dark, with a dash or a direct label.
+
+Tests: 14 new cases (pressure, adjective claims, gradient text (twice), the UA
+button, SVG text, an SVG chart, Title Case nouns, grid edges, and the three test screens before and
+after).
+
 ## 1.8.9 — 2026-11-14
 
 One release for three test runs, held until all three were in: a project

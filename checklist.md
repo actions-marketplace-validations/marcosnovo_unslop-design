@@ -179,12 +179,15 @@ cite them ("#14") in their boards.
 38. **Screenshots inside the UI (store listing, landing page)**: don't shrink
     them to 30%; crop partially, capture at a smaller size, or draw a
     simplified UI.
-39. **Charts without noise.** Remove gridlines and axes nobody reads; write
+39. **Charts without noise.** Remove gridlines and axes nobody reads (keep
+    the horizontal lines at the ticks you keep, drop the vertical ones); write
     values above bars when they fit; current period saturated, the rest in a
     tint of the same hue; an axis only if its numbers get used. On a
     dashboard people do read the axis: keep 3-4 ticks in the data voice
     (#56), series in their category colors (#51) and no glow on the bar you
-    want to highlight.
+    want to highlight. On a phone, labels stay at 11px or more as drawn: an
+    SVG whose viewBox shrinks to fit shrinks its text too, so set the
+    viewBox to the drawn width or size the labels in CSS px.
 
 ## Layout
 40. **One card per idea, the same everywhere.** The "answer card" repeats on
@@ -248,10 +251,15 @@ cite them ("#14") in their boards.
 51. **One category, one color, everywhere.** If plans or series need color,
     each gets one hue used as a small dot in the nav, the line in the chart
     and the legend — the same token. Color that only decorates a row goes
-    (#19, #24).
+    (#19, #24). Which wins in a chart: series that are app-wide categories
+    (plans, accounts, teams) keep their category color; series that are
+    parts of one measure (revenue, expenses, profit) are one hue in light
+    and dark plus a dash or a direct label (#24).
 52. **A delta names its baseline.** "+12% vs September", "3 fewer than last
     week" — never "+12%!!" or an emoji. Up/down in the role color and a word
-    or arrow (#16, #24).
+    or arrow (#16, #24). The color follows the meaning, not the direction:
+    churn, cost, latency or errors going up is worse, in the warning role,
+    with the word ("up 0.4%, worse").
 53. **Interactive states are drawn.** Hover, `:focus-visible` (a visible
     ring, never `outline: none` alone), active, disabled and selected. The
     selected nav row is a quiet filled row, not a gradient pill with a glow.
@@ -354,8 +362,17 @@ Small things a careful team gets right and a generated UI gets wrong.
   the card doesn't overflow the screen.
 - **Delete before redesigning** dead screens; merge duplicates that have
   already drifted.
-- **Exempt**: brand moments (splash, login, milestones), onboarding and
-  paywall get their own review, not this checklist blindly.
+- **Exempt**: brand moments (splash, login, milestones) and onboarding get
+  their own review, not this checklist blindly. Paywalls get this one, on
+  top of the checklist:
+- **Paywall**: a visible close (44 pt, top corner), Restore purchases,
+  Terms and Privacy; the price after the trial in the same view as the
+  button ("Then $59.99 a year"); one primary action; any "save N%" computed
+  from the real prices and naming its baseline ("vs weekly"); no countdown
+  that resets, no "only N left", no user counts or "most popular" without
+  a source (principle 6). The plans are rows with one selected state shown
+  by shape and word, not a pile of badges. `slop-scan.py` flags pressure
+  copy (#64).
 - **States**: empty, loading, error, no permission, free vs. paid — each one
   drawn.
 - **Accessibility**: largest text size without clipping, VoiceOver/TalkBack

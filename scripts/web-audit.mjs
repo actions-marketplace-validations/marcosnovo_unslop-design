@@ -13,6 +13,8 @@
 //   - token census: distinct font sizes, weights, colors, radii,
 //     shadows, spacing values, and which spacing is off the scale   (#1-#5)
 //   - text contrast computed from the real colors, failures listed  (principle 5)
+//     (SVG text by its fill; text on a gradient against its worst stop, estimated)
+//   - text drawn under 11 px at each width (SVG text at its drawn size) (#2)
 //   - icon and small-graphic contrast (SVG ≤ 64 px), under 3:1       (WCAG 1.4.11)
 //   - text scale: whether type grows with the reader's text size     (#2)
 //   - reading: lines over ~85 characters, justified/centered long text (#27, #28)
@@ -55,7 +57,7 @@ if (!target) {
 const url = /^https?:|^file:/.test(target) ? target : pathToFileURL(resolve(target)).href;
 const out = resolve(opt("out", "unslop-audit"));
 const widths = opt("widths", "390,768,1280").split(",").map(Number);
-const scale = opt("scale", "0,2,4,8,12,16,20,24,32,40,48,64,80,96").split(",").map(Number);
+const scale = opt("scale", "0,1,2,4,8,12,16,20,24,32,40,48,64,80,96").split(",").map(Number);
 const dark = !!flags.dark;
 const wait = Number(opt("wait", "500"));
 const deviceArg = opt("device", "");
@@ -89,7 +91,34 @@ mkdirSync(out, { recursive: true });
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 // Runs inside the page. Returns plain data only.
+// Both run inside the page, so each carries its own copy of drawnSize: the size text is
+// drawn at. SVG text scales with its viewBox, so 11 user units can be 5 px on a phone.
+const DRAWN = `const drawnSize = (el, cs) => {
+  const size = parseFloat(cs.fontSize);
+  const m = el.closest("svg") && el.getScreenCTM ? el.getScreenCTM() : null;
+  return m ? size * Math.hypot(m.a, m.b) : size;
+};`;
+
+// Text drawn under 11 px at this width (a chart squeezed to a phone, a caption at 10px).
+const tinyText = `(() => { ${DRAWN}
+  const out = [];
+  for (const el of document.body.querySelectorAll("*")) {
+    if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (!r.width || !r.height || cs.visibility === "hidden") continue;
+    const s = drawnSize(el, cs);
+    if (s < 11) out.push({ el: el.tagName.toLowerCase() + (typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().split(/\\s+/)[0] : ""),
+      size: Math.round(s * 10) / 10, text: el.textContent.trim().slice(0, 30) });
+  }
+  return out;
+})()`;
+
 function measure(scaleValues) {
+  const drawnSize = (el, cs) => {
+    const size = parseFloat(cs.fontSize);
+    const m = el.closest("svg") && el.getScreenCTM ? el.getScreenCTM() : null;
+    return m ? size * Math.hypot(m.a, m.b) : size;
+  };
   const vis = (el) => {
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) === 0) return false;
@@ -174,17 +203,60 @@ function measure(scaleValues) {
   const contrastFails = [], contrastUnknown = [], emoji = [], smallTargets = [], gradientText = [], glow = [];
   // © ® ™ and typographic marks (✓ ✔ ✕ ✗ ★ ☆) are Extended_Pictographic but they're characters, not emoji.
   const emojiRe = /(?![©®™✓✔✕✖✗✘★☆])\p{Extended_Pictographic}/u;
-  const edges = new Map(), transitionAll = [], dots = [];
+  // Text in the second and later column of a multi-column grid or a flex row starts on that
+  // column's own rail: not a stray left edge.
+  const inColumn = (el) => {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const p = n.parentElement;
+      if (!p) break;
+      const ps = getComputedStyle(p);
+      const row = (ps.display.includes("grid") && ps.gridTemplateColumns.split(" ").filter(Boolean).length > 1)
+        || (ps.display.includes("flex") && !ps.flexDirection.startsWith("column"));
+      if (row && n.getBoundingClientRect().left > p.getBoundingClientRect().left + parseFloat(ps.paddingLeft) + 1) return true;
+    }
+    return false;
+  };
+  // A text over a gradient: estimate against each stop and keep the worst (marked as estimated).
+  const gradientStops = (el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const bi = getComputedStyle(n).backgroundImage;
+      if (!bi || bi === "none") continue;
+      if (/url\(/.test(bi) || !/gradient\(/.test(bi)) return null;
+      const stops = (bi.match(/(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\([^)]*\)|#[0-9a-f]{3,8}\b/gi) || []).map(parse).filter(Boolean);
+      if (!stops.length) return null;
+      if (stops.every((c) => c.a >= 1)) return stops;  // opaque stops: what's underneath doesn't show
+      // Translucent stops sit on the element's own background color first, then on what's behind it.
+      const behind = n.parentElement ? bgOf(n.parentElement) : { r: 255, g: 255, b: 255, a: 1 };
+      const own = parse(getComputedStyle(n).backgroundColor);
+      const under = own && own.a >= 1 ? own : own && own.a > 0 ? (behind ? blend(own, behind) : null) : behind;
+      return under ? stops.map((c) => (c.a < 1 ? blend(c, under) : c)) : null;
+    }
+    return null;
+  };
+  const edges = new Map(), transitionAll = [], dots = [], defaultMargins = new Set();
   const all = [...document.body.querySelectorAll("*")].filter(vis);
+  // Controls the author never padded keep the browser's own 1px 6px: not a spacing decision.
+  const uaPadded = (el, cs) => el.matches("button, input, select, textarea")
+    && cs.paddingTop === "1px" && cs.paddingBottom === "1px" && cs.paddingLeft === "6px" && cs.paddingRight === "6px";
   for (const el of all) {
     const cs = getComputedStyle(el);
+    const ua = uaPadded(el, cs);
     for (const p of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "marginTop", "marginBottom", "rowGap", "columnGap"]) {
+      if (ua && p.startsWith("padding")) continue;
       const v = cs[p];
       if (!v || v === "normal" || v === "auto") continue;
       const px = Math.round(parseFloat(v));
       if (!px || px < 0) continue;
+      // A margin far past the scale is layout (margin: auto resolves to px), not a spacing step.
+      if (p.startsWith("margin") && px > Math.max(...scaleValues) * 2) continue;
       count(spacing, px, el);
-      if (!scaleValues.includes(px)) count(offScale, px, el);
+      if (!scaleValues.includes(px)) {
+        count(offScale, px, el);
+        // 1em block margins on p, ul, dl, h1… are the browser's default, not a value anyone typed.
+        if (p.startsWith("margin") && el.matches("p, ul, ol, dl, dd, blockquote, figure, h1, h2, h3, h4, h5, h6, pre, hr")
+            && Math.abs(parseFloat(v) - parseFloat(cs.fontSize) * (/^h1$/i.test(el.tagName) ? 0.67 : /^h2$/i.test(el.tagName) ? 0.83 : 1)) < 0.6)
+          defaultMargins.add(px);
+      }
     }
     const rad = cs.borderTopLeftRadius;
     if (rad && rad !== "0px") count(radii, rad, el);
@@ -211,7 +283,7 @@ function measure(scaleValues) {
       // Left edges: block-level, left-aligned text only (inline runs, table cells, chart labels and
       // centered or right-aligned numbers start wherever their neighbors end).
       if (ownText.length > 1 && !cs.display.startsWith("inline") && cs.display !== "table-cell" && !el.closest("svg")
-          && /^(start|left|-webkit-left|justify)$/.test(cs.textAlign)) {
+          && !inColumn(el) && /^(start|left|-webkit-left|justify)$/.test(cs.textAlign)) {
         // Where the glyphs start, not the border box: padding, borders and text-indent move the text.
         const node = [...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
         const range = document.createRange();
@@ -226,17 +298,27 @@ function measure(scaleValues) {
       // Emoji are color bitmaps: CSS color doesn't paint them, so an emoji-only span isn't text to measure.
       // Typographic marks (✓ ✔ © ™ ★) are painted with CSS color, so they stay in; only real emoji go.
       if (!ownText.replace(/(?![©®™✓✔✕✖✗✘★☆])\p{Extended_Pictographic}|[\uFE0F\u200D\s]/gu, "")) continue;
-      const fg = parse(cs.color);
+      // SVG text paints with fill, not color.
+      const paint = el.closest("svg") && parse(cs.fill) ? cs.fill : cs.color;
+      const fg = parse(paint);
       const bg = bgOf(el);
       const fade = opacityOf(el);
       if (fg && bg) {
         const fga = { ...fg, a: fg.a * fade };
         const eff = fga.a < 1 ? blend(fga, bg) : fga;
         const r = ratio(eff, bg);
-        const size = parseFloat(cs.fontSize), bold = Number(cs.fontWeight) >= 700;
+        const size = drawnSize(el, cs), bold = Number(cs.fontWeight) >= 700;
         const large = size >= 24 || (bold && size >= 18.66);
         const need = large ? 3 : 4.5;
-        if (r < need) contrastFails.push({ el: label(el), ratio: Math.round(r * 100) / 100, need, color: cs.color, size: cs.fontSize });
+        if (r < need) contrastFails.push({ el: label(el), ratio: Math.round(r * 100) / 100, need, color: paint, size: Math.round(size * 10) / 10 + "px" });
+      } else if (fg) {
+        const stops = gradientStops(el);
+        if (stops) {
+          const r = Math.min(...stops.map((s) => { const fga = { ...fg, a: fg.a * fade }; return ratio(fga.a < 1 ? blend(fga, s) : fga, s); }));
+          const size = drawnSize(el, cs), bold = Number(cs.fontWeight) >= 700;
+          const need = size >= 24 || (bold && size >= 18.66) ? 3 : 4.5;
+          if (r < need) contrastFails.push({ el: label(el), ratio: Math.round(r * 100) / 100, need, color: paint, size: Math.round(size * 10) / 10 + "px", estimated: true });
+        } else contrastUnknown.push(label(el));
       } else {
         contrastUnknown.push(label(el));
       }
@@ -314,7 +396,7 @@ function measure(scaleValues) {
       letterSpacing: toList(tracking), spacing: toList(spacing), offScaleSpacing: toList(offScale),
     },
     contrastFails, contrastUnknown: contrastUnknown.length, graphicsFails, emoji, smallTargets, gradientText, glow,
-    longLines, alignedText, emptyBlocks,
+    longLines, alignedText, emptyBlocks, defaultMargins: [...defaultMargins],
     focusableCount: focusables.length,
     leftEdges: toList(edges).sort((a, b) => a.value - b.value),
     craft: {
@@ -417,7 +499,8 @@ for (const w of widths) {
   await page.waitForTimeout(wait);
   const shot = join(out, `w${w}${dark ? "-dark" : ""}.png`);
   await page.screenshot({ path: shot, fullPage: true });
-  results.widths[w] = { screenshot: shot, overflow: await page.evaluate(overflow) };
+  results.widths[w] = { screenshot: shot, overflow: await page.evaluate(overflow),
+    tinyText: await page.evaluate(tinyText) };
 }
 // Real device renders (opt-in).
 results.devices = {};
@@ -461,7 +544,7 @@ results.focus = await focusCheck(page);
 results.textScale = await page.evaluate(() => {
   const els = [...document.body.querySelectorAll("*")].filter((el) => {
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
+    return r.width > 0 && r.height > 0 && !el.closest("svg") && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
   }).slice(0, 80);
   const before = els.map((el) => parseFloat(getComputedStyle(el).fontSize));
   // Twice the root's current size, whatever the page set it to (a page already at 200% must still grow).
@@ -513,13 +596,18 @@ if (c.textColors.length > 8) warn.push(`${c.textColors.length} text colors: 2-3 
 if (warn.length) L.push(...warn.map((x) => `- ⚠ ${x}`), ``);
 L.push(`**Off-scale spacing** (scale: ${scale.join(", ")}):`, ``);
 L.push(c.offScaleSpacing.length
-  ? c.offScaleSpacing.slice(0, 15).map((x) => `- \`${x.value}px\` ×${x.n} — e.g. ${x.sample}`).join("\n")
+  ? c.offScaleSpacing.slice(0, 15).map((x) => `- \`${x.value}px\` ×${x.n} — e.g. ${x.sample}`
+      + ((m.defaultMargins || []).includes(x.value) ? " (likely the browser's default 1em margin: set the margin from the scale)" : "")).join("\n")
   : `- none`);
 L.push(``, `## Contrast [principle 5]`, ``);
 L.push(m.contrastFails.length
-  ? m.contrastFails.slice(0, 30).map((x) => `- **${x.ratio}:1** (needs ${x.need}) ${x.el} — ${x.color}, ${x.size}`).join("\n")
-  : `- No text below AA among the ones measurable.`);
-if (m.contrastUnknown) L.push(`- ${m.contrastUnknown} text element(s) sit on a gradient or image: check those by eye [#36].`);
+  ? (() => {  // one line per distinct failure, so eleven axis labels in one color read as one fix
+      const g = new Map();
+      for (const x of m.contrastFails) { const k = [x.ratio, x.el, x.color, x.size, !!x.estimated].join("|"); g.set(k, { ...x, n: (g.get(k)?.n || 0) + 1 }); }
+      return [...g.values()].slice(0, 30).map((x) => `- **${x.ratio}:1** (needs ${x.need}) ${x.el}${x.n > 1 ? ` ×${x.n}` : ""} — ${x.color}, ${x.size}${x.estimated ? " (on a gradient: its worst stop, estimated)" : ""}`).join("\n");
+    })()
+  : `- No text below AA among the ones measurable (SVG text included, by its fill).`);
+if (m.contrastUnknown) L.push(`- ${m.contrastUnknown} text element(s) sit on an image: check those by eye [#36]. Text on gradients is estimated against the worst stop.`);
 L.push(``, `## Icons and graphics under 3:1 [principle 5, WCAG 1.4.11]`, ``,
   m.graphicsFails.length
     ? m.graphicsFails.slice(0, 20).map((x) => `- **${x.ratio}:1** (needs 3) ${x.el} — ${x.color}`).join("\n")
@@ -533,6 +621,13 @@ L.push(``, `## Targets under 24×24 px`, ``,
 L.push(``, `## Reading [#27, #28]`, ``,
   ...(m.longLines.length ? m.longLines.slice(0, 10).map((x) => `- **${x.cpl} characters a line** (aim for 45-75): ${x.el}`) : [`- line length within ~85 characters`]),
   ...(m.alignedText.length ? m.alignedText.slice(0, 10).map((x) => `- long text ${x.align === "justify" ? "justified" : "centered"}: ${x.el}`) : []));
+{
+  const tiny = Object.entries(results.widths).filter(([, r]) => r.tinyText && r.tinyText.length);
+  L.push(``, `## Text drawn under 11 px [#2]`, ``,
+    tiny.length ? tiny.map(([w, r]) => `- at ${w} px, ${r.tinyText.length}: ` + r.tinyText.slice(0, 6).map((x) => `${x.el} ${x.size}px "${x.text}"`).join("; ")).join("\n")
+      + `\n\nSVG text counts at the size it's drawn: a chart whose viewBox shrinks to the phone shrinks its labels too.`
+      : `- none at any width (SVG text measured at its drawn size)`);
+}
 L.push(``, `## Empty blocks [#35]`, ``,
   m.emptyBlocks.length ? m.emptyBlocks.slice(0, 10).map((x) => `- ${x.w}×${x.h} painted box with no text or media: ${x.el}`).join("\n") : `- none`);
 L.push(``, `## Emoji in visible text [#33, #45]`, ``,
