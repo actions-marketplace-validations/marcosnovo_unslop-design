@@ -110,6 +110,24 @@ RULES = [
                 r"\bsave \d+\s?%(?!(?:\s|<[^<>]+>)*(?:vs\.?|versus|compared|than)\b))"), "all"),
     ("plural-hack", "#71", "\"item(s)\" in UI text (let the platform's plural rules pick the form)",
      re.compile(r"(?:[\"'`]|(?<!=)>)[^\"'<`\n]*(?<=[\s>\"'`])[A-Za-z][a-z]{2,}\(s\)(?=[\s.,:!?<\"'`]|$)"), "all"),
+    ("justified-text", "#28", "Justified text (uneven gaps on screens; align left)",
+     re.compile(r"text-align\s*:\s*justify\b|\btext-justify\b(?!\s*:)"), "web"),
+    ("extreme-tracking", "#29", "Letter-spacing tighter than -0.04em (letters collide; a bit tighter, not crushed)",
+     re.compile(r"letter-spacing\s*:\s*-0?\.(?:0[5-9]|[1-9])\d*em|\btracking-\[-0?\.(?:0[5-9]|[1-9])\d*em\]"), "web"),
+    ("fixed-width", "#57", "Fixed width of 400px or more (scrolls sideways on a phone: max-width and fluid)",
+     re.compile(r"(?<![-\w(])(?:min-)?width\s*:\s*(?:[4-9]\d{2}|\d{4,})px|(?<![\w-])(?:min-)?w-\[(?:[4-9]\d{2}|\d{4,})px\]"), "web"),
+    ("lorem", "#48", "Lorem ipsum (real content in every mock)",
+     re.compile(r"(?i:\blorem ipsum\b|\bdolor sit amet\b)"), "all"),
+    ("placeholder-image", "#35 #48", "Placeholder image service (real images, or none)",
+     re.compile(r"(?i:via\.placeholder\.com|placehold\.(?:co|it)\b|picsum\.photos|dummyimage\.com|placekitten\.com|"
+                r"loremflickr\.com|source\.unsplash\.com/random|placeimg\.com)"), "all"),
+    ("bare-delta", "#52", "A delta with no baseline (\"+12%\" vs what? \"+12% vs September\")",
+     re.compile(r"(?:>|[\"'`]|\(\s*\")\s*[+↑▲↓▼−]\s?\d+(?:[.,]\d+)?\s?%(?!(?:[^<\"'`\n]|<[^<>]+>){0,48}?"
+                r"(?i:\b(?:vs\.?|versus|than|from|since|compared|over|last|previous|prior|yesterday|week|month|quarter|year|"
+                r"yoy|mom|wow|qoq|baseline|target|goal|avg|average)\b))"), "all"),
+    ("straight-quotes", "#61", "Straight quote or apostrophe in UI copy (use ’ “ ”)",
+     re.compile(r">[^<>{}\n]*[A-Za-z]'[A-Za-z][^<>{}\n]*<|>[^<>{}\n=]*\s\"[A-Za-z][^\"<>{}\n]*\"[^<>{}\n]*<|"
+                r"\b(?:Text|Button|Label|navigationTitle)\(\s*(?:text\s*=\s*)?\"[^\"\n]*[A-Za-z]'[A-Za-z]"), "all"),
     ("no-focus", "#53", "Focus outline removed — is there a :focus-visible style?",
      re.compile(r"outline\s*:\s*(none|0)\b|\boutline-none\b|focus:outline-none"), "web"),
 ]
@@ -396,6 +414,12 @@ def file_checks(path, text, kind, hits):
 # Rule-level checks (#60, #66-#69): what a declaration means depends on its neighbors in the
 # same rule or class list, so they read whole CSS blocks and whole class attributes.
 CSS_EXT = {".css", ".scss", ".sass", ".less", ".html", ".htm", ".vue", ".svelte", ".astro"}
+MARKUP_EXT = {".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte", ".astro", ".mdx"}
+PAGE_EXT = {".html", ".htm", ".vue", ".svelte", ".astro"}
+ANY_CLASS = re.compile(r"""\bclass(?:Name)?\s*=\s*["'{`]+([^"'`}]+)""")
+SECTION_NUMBER = re.compile(r">\s*0([1-9])\s*[.·/—–-]?\s*<")
+COUNT_PILL = re.compile(r"""<(?:span|small|b|div|em|i)\b[^<>]*\bclass(?:Name)?\s*=\s*["'{`]+[^"'`}]*(?:\brounded-full\b[^"'`}]*\bbg-[a-z]+-(?:[4-9]00)\b|\bbg-[a-z]+-(?:[4-9]00)\b[^"'`}]*\brounded-full\b|\b(?:badge|pill)\b)[^"'`}]*["'`}]+[^<>]*>\s*\d{1,4}\+?\s*</""")
+ICON_CIRCLE = re.compile(r"(?=.*\brounded-(?:full|xl|2xl)\b)(?=.*\bbg-[a-z]+-(?:50|100|200)\b)(?=.*\b(?:size|w|h)-(?:8|9|10|11|12|14)\b)")
 CSS_BLOCK = re.compile(r"([^{}]+)\{([^{}]*)\}")
 SIDE_BORDER = re.compile(r"border-(?:left|right|inline-start|inline-end)(?:-width)?\s*:\s*(\d+(?:\.\d+)?)px\s*(?:solid|[^;]*)", re.I)
 RADIUS = re.compile(r"border-radius\s*:(?!\s*0(?:px)?\s*(?:[;}]|$))", re.I)
@@ -470,6 +494,23 @@ def block_checks(path, text, ignored, line_of, hits):
     for m in TW_MONO_HEADING.finditer(text):
         add(mono, m.start(), f"<{m.group(1)} class=… font-mono>")
 
+    if ext in MARKUP_EXT:
+        # #13: one h1 per page; section titles are labels.
+        h1s = [m.start() for m in re.finditer(r"<h1\b", text)]
+        if len(h1s) >= 2 and ext in PAGE_EXT:  # a .tsx file often holds several components
+            add(("multiple-h1", "#13", "More than one h1 on the page (section titles are labels, not h1)"), h1s[1], f"{len(h1s)} × <h1>")
+        # #60: 01 / 02 / 03 on sections.
+        nums = [(m.start(), int(m.group(1))) for m in SECTION_NUMBER.finditer(text)]
+        if {1, 2, 3} <= {n for _, n in nums}:
+            add(("section-numbers", "#60", "Sections numbered 01 / 02 / 03 (does the order carry information?)"), nums[0][0], "01, 02, 03…")
+        # #50: counts in filled pills.
+        for m in COUNT_PILL.finditer(text):
+            add(("count-pill", "#50", "A count in a filled pill (counts are muted tabular text: \"Inbox 12\")"), m.start(), m.group(0)[-40:])
+        # #33: icons in colored circles, row after row.
+        circles = [m.start() for m in ANY_CLASS.finditer(text) if ICON_CIRCLE.search(m.group(1))]
+        if len(circles) >= 3:
+            add(("icon-circle", "#33", "Icons in colored circles on every row (one icon style; shapes only in empty states)"), circles[0], f"{len(circles)} tinted circles")
+
 
 # Custom properties across the scanned files: a var(--name) nobody defines falls back in
 # silence (after a rename, a merge, a typo). Only when some token is defined in scope.
@@ -492,12 +533,50 @@ def token_checks(paths, hits):
         for n, line in enumerate(text.splitlines(), 1):
             if "unslop-ignore" not in line:
                 uses += [(path, n, m.group(1)) for m in TOKEN_USE.finditer(line)]
+    project_checks(paths, hits)
     if not defined:
         return  # the token file isn't in what was scanned: nothing to compare against
     key = ("undefined-token", "#1", "Token used but defined nowhere in the scanned files")
     for path, n, name in uses:
         if name not in defined:
             hits.setdefault(key, []).append((path, n, f"var({name})"))
+
+
+# Across the scanned web files (#62, #63): a dark theme with no color-scheme anywhere, and
+# keyframe animations with no reduced-motion alternative anywhere.
+DARK_THEME = re.compile(r"prefers-color-scheme\s*:\s*dark|\[data-theme=[\"']?dark|\bdark:[a-z]")
+COLOR_SCHEME = re.compile(r"(?<![-\w])color-scheme\s*:|name=[\"']color-scheme[\"']|\bcolorScheme\s*:")
+ANIMATION = re.compile(r"@keyframes\s+[\w-]+|\banimate-(?:spin|ping|pulse|bounce|\[)")
+REDUCED_MOTION = re.compile(r"prefers-reduced-motion|\bmotion-(?:reduce|safe):|useReducedMotion|reducedMotion")
+
+
+def project_checks(paths, hits):
+    dark = anim = None
+    has_scheme = has_reduced = False
+    for path in paths:
+        if os.path.splitext(path)[1].lower() not in WEB or path.endswith((".min.js", ".min.css")):
+            continue
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if len(text) > 2_000_000:
+            continue
+        lines = text.splitlines()
+
+        def first(rx):
+            for n, line in enumerate(lines, 1):
+                if "unslop-ignore" not in line and rx.search(line):
+                    return (path, n, rx.search(line).group(0))
+            return None
+        dark = dark or first(DARK_THEME)
+        anim = anim or first(ANIMATION)
+        has_scheme = has_scheme or bool(COLOR_SCHEME.search(text))
+        has_reduced = has_reduced or bool(REDUCED_MOTION.search(text))
+    if dark and not has_scheme:
+        hits.setdefault(("no-color-scheme", "#62", "A dark theme with no color-scheme (form controls and scrollbars stay light)"), []).append(dark)
+    if anim and not has_reduced:
+        hits.setdefault(("no-reduced-motion", "#63", "Animations with no prefers-reduced-motion alternative"), []).append(anim)
 
 
 # A written project decision can allow a taste rule (a base-6 grid, tracked caps as the
@@ -551,6 +630,25 @@ def files(paths):
                     yield os.path.join(root, n)
 
 
+# Code samples and at-rule conditions aren't UI copy or layout (straight-quotes, fixed-width).
+CODE_SPAN = re.compile(r"<(code|pre|kbd|samp)\b[^>]*>.*?</\1>", re.S)
+
+
+def mask_code(line, in_pre):
+    """The line without code: what a multi-line <pre> still holds, inline <code>/<pre>/<kbd>/<samp>
+    spans, and an unclosed <pre> to the end of the line. Returns (masked line, inside <pre> after it)."""
+    if in_pre:
+        end = line.find("</pre>")
+        if end == -1:
+            return "", True
+        line = line[end + len("</pre>"):]
+    line = CODE_SPAN.sub("", line)
+    start = line.find("<pre")
+    if start != -1:
+        return line[:start], True
+    return line, False
+
+AT_RULE_PRELUDE = re.compile(r"@(?:media|container|supports)\b[^{]*")
 DEFAULT_SCALE = "0,1,2,4,8,12,16,20,24,32,40,48,64,80,96"
 DEFAULT_TYPE_SCALE = {11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 40, 44, 48, 56, 64, 72, 80, 96}
 # Colored shadows in CSS, any offset: "0 10px 30px rgba(255,107,107,.45)" is a glow too (#32).
@@ -587,7 +685,9 @@ def scan(path, scale, hits, type_scale=None):
     has_focus_visible = "focus-visible" in text
     file_checks(path, text, kind, hits)
     in_root = False
+    in_pre = False
     for n, line in enumerate(text.splitlines(), 1):
+        copy_line, in_pre = mask_code(line, in_pre)
         if "unslop-ignore" in line:
             continue
         stripped = line.strip()
@@ -609,7 +709,12 @@ def scan(path, scale, hits, type_scale=None):
                 continue
             if rid in ("native-literal", "elevation-literal") and is_token_file:
                 continue  # Tokens.kt / Type.kt / Theme.swift: literals belong there
-            if rx.search(line):
+            target = line
+            if rid == "straight-quotes":
+                target = copy_line  # code samples keep their straight quotes
+            elif rid == "fixed-width":
+                target = AT_RULE_PRELUDE.sub("", line)  # @media (min-width: 768px) is a breakpoint, not a width
+            if rx.search(target):
                 hits.setdefault((rid, ref, desc), []).append((path, n, stripped[:110]))
         if kind == "web":
             glow_key = next((r[0], r[1], r[2]) for r in RULES if r[0] == "glow")
@@ -650,12 +755,19 @@ FILE_RULES = [
     ("bounce-easing", "#67", "Bouncy or elastic easing (ease out, don't overshoot)"),
     ("ghost-card", "#68", "1px border and a soft shadow on the same card (pick one separator)"),
     ("mono-disguise", "#69", "Monospace on headings or the whole page (code faces are for code and data)"),
+    ("multiple-h1", "#13", "More than one h1 on the page (section titles are labels, not h1)"),
+    ("section-numbers", "#60", "Sections numbered 01 / 02 / 03 (does the order carry information?)"),
+    ("count-pill", "#50", "A count in a filled pill (counts are muted tabular text: \"Inbox 12\")"),
+    ("icon-circle", "#33", "Icons in colored circles on every row (one icon style; shapes only in empty states)"),
+    ("no-color-scheme", "#62", "A dark theme with no color-scheme (form controls and scrollbars stay light)"),
+    ("no-reduced-motion", "#63", "Animations with no prefers-reduced-motion alternative"),
 ]
 
 
 def all_rules():
     return [(r[0], r[1], r[2], r[4]) for r in RULES] + [(i, ref, d, "web" if i in ("hidden-nav", "side-stripe", "hard-shadow",
-            "bounce-easing", "ghost-card", "mono-disguise", "off-scale", "undefined-token") else "all") for i, ref, d in FILE_RULES]
+            "bounce-easing", "ghost-card", "mono-disguise", "off-scale", "undefined-token", "multiple-h1", "section-numbers",
+            "count-pill", "icon-circle", "no-color-scheme", "no-reduced-motion") else "all") for i, ref, d in FILE_RULES]
 
 
 def gh_escape(s):
